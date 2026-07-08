@@ -1,8 +1,24 @@
 # forticnapp-mcp
 
 An MCP (Model Context Protocol) server that exposes FortiCNAPP (formerly Lacework) API 2.0
-operations as typed, auth-aware tools over stdio/web_socket. Tools aren't hand-written: they're generated at startup from lw swagger.json (`lw.yaml`), so the tool surface tracks the spec you
-point it at.
+operations as typed, auth-aware tools. Tools aren't hand-written: they're generated at startup
+from lw swagger.json (`lw.yaml`), so the tool surface tracks the spec you point it at.
+
+The same tool registry ships behind **two interchangeable transports** — pick whichever fits how
+you're running the server:
+
+| | stdio (`forticnapp-mcp`) | HTTP (`forticnapp-mcp-http`) |
+|---|---|---|
+| Use case | One local client (Claude Desktop, Claude Code) launches the server as a subprocess | One shared server, multiple remote MCP clients over the network |
+| Transport | JSON-RPC over stdin/stdout | Streamable HTTP, `POST /mcp/` |
+| Process model | Spawned per client, dies with it | Long-running, started once (bare metal or Docker) |
+| Auth | Inherits the FortiCNAPP credentials from its own env | Same FortiCNAPP credentials, **plus** a bearer token (`FORTICNAPP_MCP_HTTP_TOKEN`) gating the HTTP endpoint itself |
+| Tenancy | One FortiCNAPP account per subprocess | One FortiCNAPP account per running instance — every caller with the bearer token sees the same account, there's no per-client credential isolation |
+
+Both modes share every other module (`config.py`, `openapi_loader.py`, `auth.py`,
+`http_client.py`, `tool_registry.py`) — `http_server.py` only adds a Starlette app, a bearer-token
+auth gate, and a `/healthz` endpoint in front of the same `mcp.server.lowlevel.Server` that
+`main.py` runs over stdio.
 
 ## Why this exists
 
@@ -44,7 +60,7 @@ Credentials come from the FortiCNAPP/Lacework console (Settings > API Keys), whi
 tags become tools) and `ENABLE_MUTATION_TOOLS` (off by default — only read-only tools are
 exposed until you opt in).
 
-## Run
+## Run: stdio mode (local, single client)
 
 ```bash
 forticnapp-mcp
@@ -52,11 +68,13 @@ forticnapp-mcp
 python -m forticnapp_mcp.main
 ```
 
-The server speaks MCP over stdio. It validates configuration and loads the spec before it starts
-listening, and exits with a clear one-line error on stderr if either step fails — it will not
-start with a broken configuration.
+The server speaks MCP over stdio — the client (e.g. Claude Desktop) launches it as a subprocess
+and talks JSON-RPC over its stdin/stdout. It validates configuration and loads the spec before it
+starts listening, and exits with a clear one-line error on stderr if either step fails — it will
+not start with a broken configuration. This is the default mode; see "Claude Desktop
+configuration" below for a full client config.
 
-## Run in Docker (HTTP transport)
+## Run: HTTP mode (shared/remote, multiple clients)
 
 For a shared/remote deployment (one server, multiple MCP clients over the network) instead of a
 local stdio subprocess, use the `forticnapp-mcp-http` entrypoint. It speaks MCP over Streamable
@@ -69,13 +87,37 @@ cp .env.example .env
 # fill in FORTICNAPP_API_BASE_URL/KEY_ID/API_SECRET as usual, plus:
 # FORTICNAPP_MCP_HTTP_TOKEN=<a long random secret>
 
+forticnapp-mcp-http
+# equivalently:
+python -m forticnapp_mcp.http_server
+```
+
+Or run it in Docker instead of bare metal:
+
+```bash
 docker compose up --build
 ```
 
-The server listens on `:8000` by default (`FORTICNAPP_MCP_HTTP_PORT`). MCP clients should POST to
-`http://<host>:8000/mcp/` with `Authorization: Bearer <FORTICNAPP_MCP_HTTP_TOKEN>` (a bare `/mcp`
-without the trailing slash 307-redirects there). `GET /healthz` is unauthenticated and used by the
-container's `HEALTHCHECK`.
+The server listens on `0.0.0.0:8000` by default (`FORTICNAPP_MCP_HTTP_HOST` /
+`FORTICNAPP_MCP_HTTP_PORT`). MCP clients should POST to `http://<host>:8000/mcp/` with
+`Authorization: Bearer <FORTICNAPP_MCP_HTTP_TOKEN>` (a bare `/mcp` without the trailing slash
+307-redirects there). `GET /healthz` is unauthenticated and used by the container's `HEALTHCHECK`
+and by any external load balancer/uptime check.
+
+A client config pointing at HTTP mode looks like this (shape varies by client — this is the
+generic Streamable HTTP form):
+
+```json
+{
+  "mcpServers": {
+    "forticnapp": {
+      "type": "http",
+      "url": "http://<host>:8000/mcp/",
+      "headers": { "Authorization": "Bearer <FORTICNAPP_MCP_HTTP_TOKEN>" }
+    }
+  }
+}
+```
 
 ## Develop
 
@@ -84,7 +126,7 @@ ruff check src/
 pytest
 ```
 
-## Claude Desktop configuration
+## Claude Desktop configuration (stdio mode)
 
 Add to `claude_desktop_config.json`:
 
