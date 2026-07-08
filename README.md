@@ -4,6 +4,8 @@ An MCP (Model Context Protocol) server that exposes FortiCNAPP (formerly Lacewor
 operations as typed, auth-aware tools. Tools aren't hand-written: they're generated at startup
 from lw swagger.json (`lw.yaml`), so the tool surface tracks the spec you point it at.
 
+Choose STDIO if you are building or running tools locally on your own machine. Choose Streamable HTTP if you need to share the server across multiple users, deploy it to the cloud, or require centralized authentication.
+
 The same tool registry ships behind **two interchangeable transports** — pick whichever fits how
 you're running the server:
 
