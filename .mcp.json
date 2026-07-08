@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "forticnapp": {
+      "type": "stdio",
+      "command": "/Users/svuillaume/tmp/personal_project/mcp_forticnapp/.venv/bin/python",
+      "args": [
+        "-m",
+        "forticnapp_mcp.main"
+      ],
+      "cwd": "/Users/svuillaume/tmp/personal_project/mcp_forticnapp",
+      "env": {}
+    }
+  }
+}
