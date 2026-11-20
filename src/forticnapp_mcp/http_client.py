@@ -24,6 +24,7 @@ import base64
 import json
 import logging
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import ValidationError as PydanticValidationError
@@ -34,7 +35,7 @@ from .errors import ApiError, ForticnappError, NetworkError
 from .errors import ValidationError as FcValidationError
 from .logging_utils import get_logger, log_fields, redact_headers
 from .models import OperationSpec, PaginationInfo, RequestMeta, ToolCallResult, ToolErrorInfo
-from .utils import format_path
+from .utils import format_path, is_mutation_operation
 
 logger = get_logger(__name__)
 
@@ -80,6 +81,21 @@ class ForticnappHttpClient:
             wrapped = ApiError(f"Unexpected error: {exc}", operation_id=operation.tool_name)
             return _error_result(operation, wrapped, request=RequestMeta(method=operation.method, path=operation.path))
 
+    def _check_page_target(self, operation: OperationSpec, method: str, url: str) -> None:
+        """page_url comes from the model, so it must not redirect the authenticated client to
+        another host (token exfiltration) or smuggle in a mutation that select_operations
+        filtered out."""
+        target, base = urlsplit(url), urlsplit(self._settings.forticnapp_api_base_url)
+        if (target.scheme, target.netloc) not in (("", ""), (base.scheme, base.netloc)):
+            raise FcValidationError(
+                "page_url must point at the configured FortiCNAPP host", operation_id=operation.tool_name
+            )
+        if not self._settings.enable_mutation_tools and is_mutation_operation(method, target.path):
+            raise FcValidationError(
+                "page_url may not issue a mutating request while mutation tools are disabled",
+                operation_id=operation.tool_name,
+            )
+
     def _validate(self, operation: OperationSpec, arguments: dict[str, Any]) -> dict[str, Any]:
         try:
             model_instance = operation.input_model.model_validate(arguments)
@@ -95,6 +111,7 @@ class ForticnappHttpClient:
         # a real upstream FortiCNAPP nextPage URL (always GET, self-contained, no body,
         # offset 0 -- it's a fresh page, not a continuation of an already-fetched one).
         method, url, params, json_body, offset = _decode_local_cursor(page_url) or ("GET", page_url, None, None, 0)
+        self._check_page_target(operation, method, url)
 
         headers = await self._headers()
         response = await self._send_with_retry(
